@@ -17,23 +17,54 @@ def validate_and_fix_args(
     """Ensures tool arguments conform strictly to input_schema property types and requirements."""
     fixed = dict(args) if isinstance(args, dict) else {}
     properties = input_schema.get("properties", {})
+    required_fields = input_schema.get("required", [])
     service = incident_data.get("service", "default-service")
 
     for prop_name, prop_spec in properties.items():
         prop_type = prop_spec.get("type", "string")
-        if prop_name not in fixed or fixed[prop_name] is None:
-            if "service" in prop_name.lower():
-                fixed[prop_name] = service
-            elif prop_type == "integer" or prop_type == "number":
-                fixed[prop_name] = 1
+
+        if prop_name in fixed and fixed[prop_name] is not None:
+            val = fixed[prop_name]
+            if prop_type in ("integer", "number"):
+                try:
+                    fixed[prop_name] = int(val)
+                except (ValueError, TypeError):
+                    fixed[prop_name] = 1
             elif prop_type == "boolean":
-                fixed[prop_name] = True
-            elif prop_type == "array":
-                fixed[prop_name] = [service]
-            else:
-                fixed[prop_name] = prop_spec.get("default", service)
+                if isinstance(val, str):
+                    fixed[prop_name] = val.lower() in ("true", "1", "yes")
+                else:
+                    fixed[prop_name] = bool(val)
+            elif prop_type == "array" and not isinstance(val, list):
+                fixed[prop_name] = [val]
+            elif prop_type == "string" and not isinstance(val, str):
+                fixed[prop_name] = str(val)
+        else:
+            if prop_name in required_fields or len(properties) == 1:
+                if "service" in prop_name.lower():
+                    fixed[prop_name] = service
+                elif prop_type in ("integer", "number"):
+                    fixed[prop_name] = 1
+                elif prop_type == "boolean":
+                    fixed[prop_name] = True
+                elif prop_type == "array":
+                    fixed[prop_name] = [service]
+                else:
+                    fixed[prop_name] = prop_spec.get("default", service)
 
     return fixed
+
+
+def preprocess_transcript_evidence_lines(transcript: str) -> str:
+    """Extracts only lines starting with or containing [ev_...] markers to save token budget."""
+    lines = transcript.splitlines()
+    ev_lines = []
+    for line in lines:
+        if re.search(r'\[[a-zA-Z0-9_\-]+\]', line):
+            ev_lines.append(line.strip())
+    if ev_lines:
+        return "\n".join(ev_lines)
+    return transcript[:2000]
 
 
 async def analyze_incident_with_openai(
@@ -49,6 +80,7 @@ async def analyze_incident_with_openai(
     allowed_causes = incident_data.get("allowedRootCauses", [])
     transcript = incident_data.get("transcript", "")
     all_evidence = extract_evidence_ids(transcript)
+    filtered_transcript = preprocess_transcript_evidence_lines(transcript)
 
     effect_tool_names = policy_data.get("effectTools", [])
     max_diagnostics = policy_data.get("maximumDiagnostics", 3)
@@ -73,18 +105,18 @@ async def analyze_incident_with_openai(
     client = AsyncOpenAI(api_key=api_key)
 
     system_prompt = (
-        "You are an expert AI Incident-Response Agent (SRE expert).\n"
-        "Analyze the incident transcript, identify the single root cause, cite evidence IDs, "
+        "You are an expert AI Incident-Response Agent.\n"
+        "Analyze the incident evidence lines, identify the exact root cause, cite 2 to 4 evidence IDs, "
         "and select necessary diagnostic tool calls and one recovery effect call.\n"
-        "STRICT CONSTRAINTS:\n"
+        "STRICT RULES:\n"
         "1. rootCause MUST be chosen from allowedRootCauses.\n"
-        "2. evidence MUST be an array of 2 to 4 unique evidence IDs present in transcript lines.\n"
+        "2. evidence MUST be an array of 2 to 4 unique evidence IDs (e.g. ['ev_101', 'ev_102']) present in transcript lines.\n"
         "3. diagnostics: Select 1 to maximumDiagnostics diagnostic tool calls ONLY from Diagnostic Tool Catalog. "
-        "Arguments MUST strictly conform to tool inputSchema and incident context. "
-        "Each diagnostic call MUST cite 1 to 4 evidence IDs from the chosen diagnosis evidence array.\n"
-        "4. effect: Select EXACTLY 1 recovery effect tool from Effect Tool Catalog. "
-        "Arguments MUST strictly conform to tool inputSchema.\n"
-        "5. Respond in valid JSON."
+        "Choose ONLY diagnostic tools directly relevant to confirming the root cause. "
+        "Extract exact argument values (pod names, service names, database names, queries, timestamps) from evidence lines to match inputSchema properties. "
+        "Each diagnostic call MUST cite 1 to 4 evidence IDs from the chosen evidence array.\n"
+        "4. effect: Select EXACTLY 1 recovery effect tool from Effect Tool Catalog with exact arguments.\n"
+        "5. Respond strictly in JSON format."
     )
 
     user_prompt = f"""
@@ -93,16 +125,16 @@ Incident Details:
 - Service: {incident_data.get('service')}
 - Severity: {incident_data.get('severity')}
 
-Allowed Root Causes (Pick EXACTLY one):
+Allowed Root Causes (Select EXACTLY one):
 {json.dumps(allowed_causes, indent=2)}
 
-Available Evidence IDs in Transcript:
+Available Evidence IDs:
 {json.dumps(all_evidence, indent=2)}
 
-Transcript Evidence:
-{transcript}
+Evidence Lines from Transcript:
+{filtered_transcript}
 
-Diagnostic Tool Catalog (Select 1 to {max_diagnostics}):
+Diagnostic Tool Catalog (Select minimal needed, 1 to {max_diagnostics}):
 {json.dumps(diagnostic_catalog, indent=2)}
 
 Effect Tool Catalog (Select EXACTLY 1):
@@ -110,9 +142,9 @@ Effect Tool Catalog (Select EXACTLY 1):
 
 Maximum Diagnostics Allowed: {max_diagnostics}
 
-Output JSON format:
+Return JSON with this exact shape:
 {{
-  "rootCause": "one allowed value from allowedRootCauses",
+  "rootCause": "one value from allowedRootCauses",
   "evidence": ["ev_...", "ev_..."],
   "diagnostics": [
     {{
@@ -165,7 +197,7 @@ Output JSON format:
             if tool_name in diagnostic_map:
                 schema = diagnostic_map[tool_name].get("inputSchema", {})
                 d["arguments"] = validate_and_fix_args(d.get("arguments", {}), schema, incident_data)
-                
+
                 d_ev = [e for e in d.get("evidence", []) if e in cited]
                 if not d_ev:
                     d_ev = [cited[0]]
@@ -221,7 +253,7 @@ def fallback_incident_analysis(
     evidence = all_evidence[:min(4, max(2, len(all_evidence)))] if all_evidence else ["ev_1", "ev_2"]
 
     diagnostics = []
-    for tool in diagnostic_catalog[:max_diagnostics]:
+    for tool in diagnostic_catalog[:min(1, max_diagnostics)]:
         schema = tool.get("inputSchema", {})
         diagnostics.append({
             "toolName": tool["name"],

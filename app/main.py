@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -58,6 +59,9 @@ async def handle_create_incident(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
 
+    if not isinstance(body_json, dict):
+        raise HTTPException(status_code=400, detail="Payload must be a JSON object.")
+
     profile = body_json.get("profile")
     if profile != "ga5-incident-agent/v2":
         raise HTTPException(
@@ -71,7 +75,8 @@ async def handle_create_incident(
         raise HTTPException(status_code=422, detail=str(e))
 
     run_id = req.runId
-    payload_hash = compute_bytes_hash(body_bytes)
+    canonical_payload = json.dumps(body_json, sort_keys=True)
+    payload_hash = compute_bytes_hash(canonical_payload.encode('utf-8'))
 
     # Replay or Conflict Check
     existing_run = get_run(run_id)
@@ -124,6 +129,9 @@ async def handle_incident_receipt(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON receipt.")
 
+    if not isinstance(body_json, dict):
+        raise HTTPException(status_code=400, detail="Receipt payload must be a JSON object.")
+
     try:
         receipt_req = ReceiptRequest(**body_json)
     except Exception as e:
@@ -131,7 +139,8 @@ async def handle_incident_receipt(
 
     saved_hash, internal_state = existing_run
     receipt_id = receipt_req.receiptId
-    receipt_payload_hash = compute_bytes_hash(body_bytes)
+    canonical_receipt = json.dumps(body_json, sort_keys=True)
+    receipt_payload_hash = compute_bytes_hash(canonical_receipt.encode('utf-8'))
 
     # Receipt Replay or Conflict Check
     existing_receipt = get_receipt(receipt_id)

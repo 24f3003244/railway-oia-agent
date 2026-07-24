@@ -36,6 +36,7 @@ def serialize_state(state_dict: Dict[str, Any]) -> str:
     otlp = d.get("otlpBuilder")
     if isinstance(otlp, OTLPBuilder):
         d["otlp_data"] = otlp.to_dict()
+        d["agentSpanId"] = otlp.agent_span_id
         del d["otlpBuilder"]
     return json.dumps(d)
 
@@ -44,15 +45,16 @@ def deserialize_state(state_json: str) -> Dict[str, Any]:
     d = json.loads(state_json)
     if "otlp_data" in d and "otlpBuilder" not in d:
         otlp_data = d["otlp_data"]
+        spans = otlp_data.get("resourceSpans", [{}])[0].get("scopeSpans", [{}])[0].get("spans", [])
         otlp = OTLPBuilder(
             run_id=d["runId"],
             public_marker=d["publicMarker"],
             trace_id=d["traceId"],
             server_span_id=d["serverSpanId"],
-            parent_span_id=d.get("parentSpanId")
+            parent_span_id=d.get("parentSpanId"),
+            agent_span_id=d.get("agentSpanId"),
+            existing_spans=spans
         )
-        spans = otlp_data.get("resourceSpans", [{}])[0].get("scopeSpans", [{}])[0].get("spans", [])
-        otlp.spans = spans
         d["otlpBuilder"] = otlp
     return d
 

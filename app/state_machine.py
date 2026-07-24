@@ -101,7 +101,8 @@ async def create_new_incident_run(
             "callId": call_id,
             "toolName": tool_name,
             "logicalSpanId": logical_span_id,
-            "clientSpanId": client_span_id
+            "clientSpanId": client_span_id,
+            "phase": "diagnostic"
         })
 
     internal_state = {
@@ -111,6 +112,7 @@ async def create_new_incident_run(
         "traceId": trace_id,
         "serverSpanId": server_span_id,
         "parentSpanId": parent_span_id,
+        "agentSpanId": otlp.agent_span_id,
         "diagnosis": diagnosis,
         "policy": policy_dict,
         "toolCatalog": tool_catalog_list,
@@ -121,6 +123,7 @@ async def create_new_incident_run(
         "receiptLog": [],
         "diagnosticTracking": diagnostic_tracking,
         "pendingApproval": None,
+        "pendingEffectDispatch": None,
         "chosenEffect": None,
         "suppressed": [],
         "otlpBuilder": otlp
@@ -217,20 +220,27 @@ def process_receipt_and_advance(
                     internal_state["status"] = "failed"
                     planned_eff_name = internal_state.get("plannedEffect", {}).get("toolName", "effect_tool")
                     internal_state["suppressed"] = [planned_eff_name]
+                    internal_state["chosenEffect"] = None
 
+                    internal_state["receiptLog"] = receipt_log
+                    internal_state["actionLog"] = action_log
                     response_payload = build_final_response(internal_state, status="failed")
                     return internal_state, response_payload
 
             # Check if this was an effect outcome receipt
             pending_effect = internal_state.get("pendingEffectDispatch")
             if pending_effect and pending_effect["actionId"] == outcome.actionId:
+                internal_state["receiptLog"] = receipt_log
+                internal_state["actionLog"] = action_log
                 if outcome.status == 200:
                     internal_state["status"] = "completed"
                     internal_state["chosenEffect"] = pending_effect["toolName"]
+                    internal_state["suppressed"] = []
                     response_payload = build_final_response(internal_state, status="completed")
                     return internal_state, response_payload
                 else:
                     internal_state["status"] = "failed"
+                    internal_state["chosenEffect"] = None
                     response_payload = build_final_response(internal_state, status="failed")
                     return internal_state, response_payload
 
@@ -284,7 +294,8 @@ def process_receipt_and_advance(
                         "callId": call_id,
                         "toolName": tool_name,
                         "logicalSpanId": logical_span_id,
-                        "clientSpanId": client_span_id
+                        "clientSpanId": client_span_id,
+                        "phase": "effect"
                     })
 
                     response_payload = {
@@ -300,18 +311,20 @@ def process_receipt_and_advance(
 
     # 3. Check Diagnostic Completion & Issue Effect or Approval Request
     if not internal_state.get("diagnosticsJoined", False):
-        original_action_ids = [d["actionId"] for d in diagnostic_tracking]
+        diag_entries = [d for d in diagnostic_tracking if d.get("phase") == "diagnostic"]
+        original_action_ids = [d["actionId"] for d in diag_entries]
         successful_action_ids = set()
         for r in receipt_log:
             if r.get("status") == 200 and r.get("resultClass") == "diagnosis_confirmed":
                 successful_action_ids.add(r.get("actionId"))
 
-        if all(aid in successful_action_ids for aid in original_action_ids):
+        if original_action_ids and all(aid in successful_action_ids for aid in original_action_ids):
             internal_state["diagnosticsJoined"] = True
 
-            # Add incident.join span linking all diagnostic logical spans
-            logical_span_ids = [d["logicalSpanId"] for d in diagnostic_tracking]
-            otlp.add_incident_join_span(logical_span_ids)
+            # Add incident.join span linking all diagnostic logical spans if fan out (>1)
+            logical_span_ids = [d["logicalSpanId"] for d in diag_entries]
+            if len(logical_span_ids) > 1:
+                otlp.add_incident_join_span(logical_span_ids)
 
             planned_effect = internal_state.get("plannedEffect") or {"toolName": "scale_service", "arguments": {}}
             effect_tool_name = planned_effect.get("toolName", "scale_service")
@@ -332,7 +345,9 @@ def process_receipt_and_advance(
                 otlp.add_approval_gate_span(approval_id=approval_id)
 
                 response_payload = {
+                    "runId": internal_state["runId"],
                     "status": "waiting",
+                    "diagnosis": internal_state["diagnosis"],
                     "dispatches": [],
                     "approvals": [approval_req_obj]
                 }
@@ -371,7 +386,8 @@ def process_receipt_and_advance(
                     "callId": call_id,
                     "toolName": effect_tool_name,
                     "logicalSpanId": logical_span_id,
-                    "clientSpanId": client_span_id
+                    "clientSpanId": client_span_id,
+                    "phase": "effect"
                 })
 
                 response_payload = {
@@ -394,13 +410,18 @@ def process_receipt_and_advance(
 def build_final_response(internal_state: Dict[str, Any], status: str) -> Dict[str, Any]:
     """Formats terminal final response or stored GET state."""
     otlp: OTLPBuilder = internal_state["otlpBuilder"]
-    return {
+    res = {
         "runId": internal_state["runId"],
         "status": status,
         "diagnosis": internal_state["diagnosis"],
-        "chosenEffect": internal_state.get("chosenEffect") or internal_state.get("plannedEffect", {}).get("toolName", "scale_service"),
+        "chosenEffect": internal_state.get("chosenEffect"),
         "suppressed": internal_state.get("suppressed", []),
         "actionLog": internal_state.get("actionLog", []),
         "receiptLog": internal_state.get("receiptLog", []),
         "otlp": otlp.to_dict()
     }
+    if status == "completed" and not res.get("chosenEffect"):
+        res["chosenEffect"] = internal_state.get("plannedEffect", {}).get("toolName", "scale_service")
+    elif status == "failed":
+        res["chosenEffect"] = None
+    return res

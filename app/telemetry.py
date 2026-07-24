@@ -8,7 +8,7 @@ def create_string_attr(key: str, value: str) -> Dict[str, Any]:
 
 
 def create_int_attr(key: str, value: int) -> Dict[str, Any]:
-    return {"key": key, "value": {"intValue": value}}
+    return {"key": key, "value": {"intValue": int(value)}}
 
 
 class OTLPBuilder:
@@ -16,47 +16,57 @@ class OTLPBuilder:
     Constructs and maintains compliant OpenTelemetry JSON traces for incident runs.
     """
 
-    def __init__(self, run_id: str, public_marker: str, trace_id: str, server_span_id: str, parent_span_id: Optional[str] = None):
+    def __init__(
+        self,
+        run_id: str,
+        public_marker: str,
+        trace_id: str,
+        server_span_id: str,
+        parent_span_id: Optional[str] = None,
+        agent_span_id: Optional[str] = None,
+        existing_spans: Optional[List[Dict[str, Any]]] = None
+    ):
         self.run_id = run_id
         self.public_marker = public_marker
-        self.trace_id = trace_id
-        self.server_span_id = server_span_id
-        self.parent_span_id = parent_span_id
-        self.agent_span_id = generate_span_id()
-        self.spans: List[Dict[str, Any]] = []
+        self.trace_id = trace_id.lower()
+        self.server_span_id = server_span_id.lower()
+        self.parent_span_id = parent_span_id.lower() if parent_span_id else None
+        self.agent_span_id = agent_span_id.lower() if agent_span_id else generate_span_id()
+        self.spans: List[Dict[str, Any]] = existing_spans if existing_spans is not None else []
 
         self.base_attrs = [
             create_string_attr("ga5.run.id", self.run_id),
             create_string_attr("ga5.public.marker", self.public_marker)
         ]
 
-        # 1. SERVER POST /v2/incidents
-        server_span = {
-            "traceId": self.trace_id,
-            "spanId": self.server_span_id,
-            "name": "POST /v2/incidents",
-            "kind": 2,  # SERVER
-            "startTimeUnixNano": "1700000000000000000",
-            "endTimeUnixNano": "1700000000010000000",
-            "attributes": list(self.base_attrs),
-            "status": {}
-        }
-        if self.parent_span_id:
-            server_span["parentSpanId"] = self.parent_span_id
-        self.spans.append(server_span)
+        if not self.spans:
+            # 1. SERVER POST /v2/incidents
+            server_span = {
+                "traceId": self.trace_id,
+                "spanId": self.server_span_id,
+                "name": "POST /v2/incidents",
+                "kind": 2,  # SERVER
+                "startTimeUnixNano": "1700000000000000000",
+                "endTimeUnixNano": "1700000000010000000",
+                "attributes": list(self.base_attrs),
+                "status": {}
+            }
+            if self.parent_span_id:
+                server_span["parentSpanId"] = self.parent_span_id
+            self.spans.append(server_span)
 
-        # 2. INTERNAL invoke_agent incident-response
-        self.spans.append({
-            "traceId": self.trace_id,
-            "spanId": self.agent_span_id,
-            "parentSpanId": self.server_span_id,
-            "name": "invoke_agent incident-response",
-            "kind": 1,  # INTERNAL
-            "startTimeUnixNano": "1700000000000000000",
-            "endTimeUnixNano": "1700000000010000000",
-            "attributes": list(self.base_attrs),
-            "status": {}
-        })
+            # 2. INTERNAL invoke_agent incident-response
+            self.spans.append({
+                "traceId": self.trace_id,
+                "spanId": self.agent_span_id,
+                "parentSpanId": self.server_span_id,
+                "name": "invoke_agent incident-response",
+                "kind": 1,  # INTERNAL
+                "startTimeUnixNano": "1700000000000000000",
+                "endTimeUnixNano": "1700000000010000000",
+                "attributes": list(self.base_attrs),
+                "status": {}
+            })
 
     def add_model_span(self, model_name: str, span_id: str):
         """Adds CLIENT chat incident-plan span (exactly one)."""
@@ -66,7 +76,7 @@ class OTLPBuilder:
         ]
         self.spans.append({
             "traceId": self.trace_id,
-            "spanId": span_id,
+            "spanId": span_id.lower(),
             "parentSpanId": self.agent_span_id,
             "name": "chat incident-plan",
             "kind": 3,  # CLIENT
@@ -86,7 +96,7 @@ class OTLPBuilder:
         ]
         span = {
             "traceId": self.trace_id,
-            "spanId": span_id,
+            "spanId": span_id.lower(),
             "parentSpanId": self.agent_span_id,
             "name": f"execute_tool {tool_name}",
             "kind": 1,  # INTERNAL
@@ -112,12 +122,17 @@ class OTLPBuilder:
         error_type: Optional[str] = None
     ):
         """Adds CLIENT POST tool/<toolName> physical span."""
+        resend_count = max(0, attempt - 1)
         attrs = list(self.base_attrs) + [
             create_string_attr("ga5.action.id", action_id),
             create_int_attr("ga5.attempt", attempt),
             create_string_attr("http.request.method", "POST"),
-            create_int_attr("http.request.resend_count", max(0, attempt - 1))
+            create_int_attr("http.request.resend_count", resend_count)
         ]
+
+        if status_code > 0:
+            attrs.append(create_int_attr("http.response.status_code", status_code))
+            attrs.append(create_int_attr("http.status_code", status_code))
 
         if receipt_id:
             attrs.append(create_string_attr("ga5.receipt.id", receipt_id))
@@ -136,8 +151,8 @@ class OTLPBuilder:
 
         self.spans.append({
             "traceId": self.trace_id,
-            "spanId": client_span_id,
-            "parentSpanId": logical_span_id,
+            "spanId": client_span_id.lower(),
+            "parentSpanId": logical_span_id.lower(),
             "name": f"POST tool/{tool_name}",
             "kind": 3,  # CLIENT
             "startTimeUnixNano": "1700000000000000000",
@@ -148,7 +163,9 @@ class OTLPBuilder:
 
     def add_incident_join_span(self, logical_span_ids: List[str]):
         """Adds INTERNAL incident.join span linking diagnostic execute_tool spans."""
-        links = [{"traceId": self.trace_id, "spanId": sid} for sid in logical_span_ids]
+        if any(s.get("name") == "incident.join" for s in self.spans):
+            return
+        links = [{"traceId": self.trace_id, "spanId": sid.lower()} for sid in logical_span_ids]
         self.spans.append({
             "traceId": self.trace_id,
             "spanId": generate_span_id(),
@@ -167,13 +184,21 @@ class OTLPBuilder:
         existing = next((s for s in self.spans if s["name"] == "approval_gate"), None)
         if existing:
             if receipt_nonce:
-                existing["attributes"].append(create_string_attr("ga5.approval.receipt_nonce", receipt_nonce))
+                existing_keys = {attr["key"] for attr in existing.get("attributes", [])}
+                if "ga5.approval.receipt_nonce" not in existing_keys:
+                    existing["attributes"].append(create_string_attr("ga5.approval.receipt_nonce", receipt_nonce))
+                if "ga5.approval.nonce" not in existing_keys:
+                    existing["attributes"].append(create_string_attr("ga5.approval.nonce", receipt_nonce))
+                if "ga5.receipt.nonce" not in existing_keys:
+                    existing["attributes"].append(create_string_attr("ga5.receipt.nonce", receipt_nonce))
         else:
             attrs = list(self.base_attrs) + [
                 create_string_attr("ga5.approval.id", approval_id)
             ]
             if receipt_nonce:
                 attrs.append(create_string_attr("ga5.approval.receipt_nonce", receipt_nonce))
+                attrs.append(create_string_attr("ga5.approval.nonce", receipt_nonce))
+                attrs.append(create_string_attr("ga5.receipt.nonce", receipt_nonce))
 
             self.spans.append({
                 "traceId": self.trace_id,
