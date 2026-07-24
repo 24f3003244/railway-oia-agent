@@ -1,25 +1,32 @@
-2026-07-24T09:01:13.837762357Z [inf]  Starting Container
-2026-07-24T09:01:14.613656872Z [err]  INFO:     Started server process [1]
-2026-07-24T09:01:14.613671586Z [err]  INFO:     Waiting for application startup.
-2026-07-24T09:01:14.613681200Z [err]  INFO:app.main:SQLite database initialized successfully.
-2026-07-24T09:01:14.613686724Z [err]  INFO:     Application startup complete.
-2026-07-24T09:01:14.613693231Z [err]  INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
-2026-07-24T09:01:14.613898150Z [err]  INFO:__main__:Starting server on 0.0.0.0:8080
-2026-07-24T09:01:54.242935801Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-2026-07-24T09:01:54.242944085Z [inf]  INFO:     100.64.0.2:11996 - "POST /v2/incidents HTTP/1.1" 200 OK
-2026-07-24T09:01:54.242952388Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-2026-07-24T09:01:54.242959891Z [inf]  INFO:     100.64.0.3:49486 - "POST /v2/incidents HTTP/1.1" 200 OK
-2026-07-24T09:01:57.344376253Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-2026-07-24T09:01:57.344387098Z [inf]  INFO:     100.64.0.4:38212 - "POST /v2/incidents HTTP/1.1" 200 OK
-2026-07-24T09:02:00.502282026Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-2026-07-24T09:02:00.502296221Z [inf]  INFO:     100.64.0.5:29374 - "POST /v2/incidents HTTP/1.1" 200 OK
-2026-07-24T09:02:04.454458694Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-2026-07-24T09:02:04.466283796Z [inf]  INFO:     100.64.0.6:58284 - "POST /v2/incidents HTTP/1.1" 200 OK
-2026-07-24T09:02:08.374186529Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-2026-07-24T09:02:08.374195588Z [inf]  INFO:     100.64.0.7:44060 - "POST /v2/incidents HTTP/1.1" 200 OK
-2026-07-24T09:02:13.470494372Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-2026-07-24T09:02:13.470500896Z [inf]  INFO:     100.64.0.2:50726 - "POST /v2/incidents HTTP/1.1" 200 OK
-2026-07-24T09:02:13.470505012Z [inf]  INFO:     100.64.0.5:32636 - "POST /v2/incidents HTTP/1.1" 400 Bad Request
-2026-07-24T09:02:13.470509490Z [err]  WARNING:app.main:Conflict detected for runId=run_LaRTvZshquCjwoxGaetAxi. Payload hash mismatch.
-2026-07-24T09:02:13.470514103Z [inf]  INFO:     100.64.0.3:19188 - "POST /v2/incidents HTTP/1.1" 409 Conflict
-2026-07-24T09:02:13.695420555Z [inf]  INFO:     100.64.0.8:43338 - "GET /v2/incidents/run_LaRTvZshquCjwoxGaetAxi HTTP/1.1" 200 OK
+2026-07-24T09:05:16.726036708Z [inf]  Starting Container
+2026-07-24T09:05:18.511875666Z [err]  INFO:     Application startup complete.
+2026-07-24T09:05:18.511888722Z [err]  INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+2026-07-24T09:05:18.511964307Z [err]  INFO:__main__:Starting server on 0.0.0.0:8080
+2026-07-24T09:05:18.511970579Z [err]  INFO:     Started server process [1]
+2026-07-24T09:05:18.511988249Z [err]  INFO:     Waiting for application startup.
+2026-07-24T09:05:18.512000856Z [err]  INFO:app.main:SQLite database initialized successfully.
+2026-07-24T09:05:38.650077135Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-07-24T09:05:38.650082579Z [err]  ERROR:app.planner:OpenAI API call failed: Error code: 400 - {'error': {'message': "Invalid schema for response_format 'incident_analysis': In context=('properties', 'diagnostics', 'items', 'properties', 'arguments'), 'additionalProperties' is required to be supplied and to be false.", 'type': 'invalid_request_error', 'param': 'response_format', 'code': None}}. Falling back to heuristic planner.
+2026-07-24T09:05:38.650090079Z [inf]  INFO:     100.64.0.2:25174 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T09:05:38.650096154Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-07-24T09:05:38.650149331Z [err]  ERROR:app.planner:OpenAI API call failed: Error code: 400 - {'error': {'message': "Invalid schema for response_format 'incident_analysis': In context=('properties', 'diagnostics', 'items', 'properties', 'arguments'), 'additionalProperties' is required to be supplied and to be false.", 'type': 'invalid_request_error', 'param': 'response_format', 'code': None}}. Falling back to heuristic planner.
+2026-07-24T09:05:38.650154362Z [inf]  INFO:     100.64.0.3:45498 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T09:05:38.650159107Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-07-24T09:05:38.650163512Z [err]  ERROR:app.planner:OpenAI API call failed: Error code: 400 - {'error': {'message': "Invalid schema for response_format 'incident_analysis': In context=('properties', 'diagnostics', 'items', 'properties', 'arguments'), 'additionalProperties' is required to be supplied and to be false.", 'type': 'invalid_request_error', 'param': 'response_format', 'code': None}}. Falling back to heuristic planner.
+2026-07-24T09:05:38.650168065Z [inf]  INFO:     100.64.0.3:45498 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T09:05:38.651589628Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-07-24T09:05:38.651593939Z [err]  ERROR:app.planner:OpenAI API call failed: Error code: 400 - {'error': {'message': "Invalid schema for response_format 'incident_analysis': In context=('properties', 'diagnostics', 'items', 'properties', 'arguments'), 'additionalProperties' is required to be supplied and to be false.", 'type': 'invalid_request_error', 'param': 'response_format', 'code': None}}. Falling back to heuristic planner.
+2026-07-24T09:05:38.651598539Z [inf]  INFO:     100.64.0.3:45498 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T09:05:38.651957095Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-07-24T09:05:38.651966333Z [err]  ERROR:app.planner:OpenAI API call failed: Error code: 400 - {'error': {'message': "Invalid schema for response_format 'incident_analysis': In context=('properties', 'diagnostics', 'items', 'properties', 'arguments'), 'additionalProperties' is required to be supplied and to be false.", 'type': 'invalid_request_error', 'param': 'response_format', 'code': None}}. Falling back to heuristic planner.
+2026-07-24T09:05:38.651971150Z [inf]  INFO:     100.64.0.4:56486 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T09:05:38.651975903Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-07-24T09:05:38.651980673Z [err]  ERROR:app.planner:OpenAI API call failed: Error code: 400 - {'error': {'message': "Invalid schema for response_format 'incident_analysis': In context=('properties', 'diagnostics', 'items', 'properties', 'arguments'), 'additionalProperties' is required to be supplied and to be false.", 'type': 'invalid_request_error', 'param': 'response_format', 'code': None}}. Falling back to heuristic planner.
+2026-07-24T09:05:38.651985394Z [inf]  INFO:     100.64.0.4:56486 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T09:05:38.698541595Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-07-24T09:05:38.698556855Z [err]  ERROR:app.planner:OpenAI API call failed: Error code: 400 - {'error': {'message': "Invalid schema for response_format 'incident_analysis': In context=('properties', 'diagnostics', 'items', 'properties', 'arguments'), 'additionalProperties' is required to be supplied and to be false.", 'type': 'invalid_request_error', 'param': 'response_format', 'code': None}}. Falling back to heuristic planner.
+2026-07-24T09:05:38.716338250Z [inf]  INFO:     100.64.0.3:45498 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T09:05:39.723264414Z [inf]  INFO:     100.64.0.3:45498 - "POST /v2/incidents HTTP/1.1" 400 Bad Request
+2026-07-24T09:05:39.723269990Z [err]  WARNING:app.main:Conflict detected for runId=run_bXLbKhor4V7Gip2cvE8Ykg. Payload hash mismatch.
+2026-07-24T09:05:39.723274923Z [inf]  INFO:     100.64.0.5:38328 - "POST /v2/incidents HTTP/1.1" 409 Conflict
+2026-07-24T09:05:39.723280367Z [inf]  INFO:     100.64.0.6:31824 - "GET /v2/incidents/run_bXLbKhor4V7Gip2cvE8Ykg HTTP/1.1" 200 OK

@@ -43,7 +43,7 @@ async def analyze_incident_with_openai(
     api_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Uses OpenAI chat completions with structured output JSON schema to diagnose root cause,
+    Uses OpenAI chat completions with json_object response format to diagnose root cause,
     select evidence, and decide diagnostic and recovery effect tool calls.
     """
     allowed_causes = incident_data.get("allowedRootCauses", [])
@@ -83,7 +83,8 @@ async def analyze_incident_with_openai(
         "Arguments MUST strictly conform to tool inputSchema and incident context. "
         "Each diagnostic call MUST cite 1 to 4 evidence IDs from the chosen diagnosis evidence array.\n"
         "4. effect: Select EXACTLY 1 recovery effect tool from Effect Tool Catalog. "
-        "Arguments MUST strictly conform to tool inputSchema."
+        "Arguments MUST strictly conform to tool inputSchema.\n"
+        "5. Respond in valid JSON."
     )
 
     user_prompt = f"""
@@ -92,7 +93,7 @@ Incident Details:
 - Service: {incident_data.get('service')}
 - Severity: {incident_data.get('severity')}
 
-Allowed Root Causes:
+Allowed Root Causes (Pick EXACTLY one):
 {json.dumps(allowed_causes, indent=2)}
 
 Available Evidence IDs in Transcript:
@@ -108,55 +109,26 @@ Effect Tool Catalog (Select EXACTLY 1):
 {json.dumps(effect_catalog, indent=2)}
 
 Maximum Diagnostics Allowed: {max_diagnostics}
+
+Output JSON format:
+{{
+  "rootCause": "one allowed value from allowedRootCauses",
+  "evidence": ["ev_...", "ev_..."],
+  "diagnostics": [
+    {{
+      "toolName": "name_from_diagnostic_catalog",
+      "arguments": {{ ... matching tool inputSchema ... }},
+      "evidence": ["ev_..."]
+    }}
+  ],
+  "effect": {{
+    "toolName": "name_from_effect_catalog",
+    "arguments": {{ ... matching tool inputSchema ... }}
+  }}
+}}
 """
 
     model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-
-    json_schema_spec = {
-        "name": "incident_analysis",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "rootCause": {
-                    "type": "string",
-                    "description": "Selected root cause string from allowedRootCauses."
-                },
-                "evidence": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Array of 2 to 4 evidence IDs."
-                },
-                "diagnostics": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "toolName": {"type": "string"},
-                            "arguments": {"type": "object"},
-                            "evidence": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            }
-                        },
-                        "required": ["toolName", "arguments", "evidence"],
-                        "additionalProperties": False
-                    }
-                },
-                "effect": {
-                    "type": "object",
-                    "properties": {
-                        "toolName": {"type": "string"},
-                        "arguments": {"type": "object"}
-                    },
-                    "required": ["toolName", "arguments"],
-                    "additionalProperties": False
-                }
-            },
-            "required": ["rootCause", "evidence", "diagnostics", "effect"],
-            "additionalProperties": False
-        }
-    }
 
     try:
         response = await client.chat.completions.create(
@@ -165,7 +137,7 @@ Maximum Diagnostics Allowed: {max_diagnostics}
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            response_format={"type": "json_schema", "json_schema": json_schema_spec},
+            response_format={"type": "json_object"},
             temperature=0.1
         )
 
