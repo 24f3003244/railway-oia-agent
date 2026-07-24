@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request, HTTPException, Header, Response, status
 from fastapi.responses import JSONResponse
 
 from app.models import IncidentRequest, ReceiptRequest
-from app.utils import compute_payload_hash
+from app.utils import compute_bytes_hash
 from app.database import (
     init_db, get_run, save_run, get_receipt, save_receipt
 )
@@ -22,11 +22,9 @@ init_db()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
     init_db()
     logger.info("SQLite database initialized successfully.")
     yield
-    # Shutdown logic
 
 
 app = FastAPI(
@@ -47,7 +45,6 @@ async def root():
 
 @app.post("/v2/incidents")
 async def handle_create_incident(
-    req: IncidentRequest,
     request: Request,
     traceparent: Optional[str] = Header(None)
 ):
@@ -55,37 +52,44 @@ async def handle_create_incident(
     POST /v2/incidents - Receives incident payload, validates profile, runs AI diagnosis,
     formulates initial diagnostic dispatches, and returns initial response.
     """
-    # 1. Profile Validation
-    if req.profile != "ga5-incident-agent/v2":
+    body_bytes = await request.body()
+    try:
+        body_json = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
+    profile = body_json.get("profile")
+    if profile != "ga5-incident-agent/v2":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported profile '{req.profile}'. Expected 'ga5-incident-agent/v2'."
+            detail=f"Unsupported profile '{profile}'. Expected 'ga5-incident-agent/v2'."
         )
 
-    run_id = req.runId
-    body_bytes = await request.body()
-    payload_hash = compute_payload_hash(req.model_dump())
+    try:
+        req = IncidentRequest(**body_json)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
-    # 2. Check for Replay or Conflict
+    run_id = req.runId
+    payload_hash = compute_bytes_hash(body_bytes)
+
+    # Replay or Conflict Check
     existing_run = get_run(run_id)
     if existing_run:
         saved_hash, saved_state = existing_run
         if saved_hash == payload_hash:
-            # Replay existing state without re-running AI model or actions
-            logger.info(f"Replay detected for runId={run_id}. Returning cached state.")
+            logger.info(f"Replay detected for runId={run_id}. Returning cached response.")
             response_payload = saved_state.get("last_response_payload")
             if not response_payload:
                 response_payload = build_final_response(saved_state, saved_state.get("status", "waiting"))
             return JSONResponse(content=response_payload)
         else:
-            # Conflict: same runId with changed content
             logger.warning(f"Conflict detected for runId={run_id}. Payload hash mismatch.")
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Run ID '{run_id}' already exists with different payload content."
             )
 
-    # 3. Process New Incident Run
     api_key = os.environ.get("OPENAI_API_KEY")
     internal_state, response_payload = await create_new_incident_run(
         req=req,
@@ -93,7 +97,6 @@ async def handle_create_incident(
         api_key=api_key
     )
 
-    # Save state to DB
     internal_state["last_response_payload"] = response_payload
     save_run(run_id, payload_hash, internal_state)
 
@@ -103,7 +106,7 @@ async def handle_create_incident(
 @app.post("/v2/incidents/{runId}/receipts")
 async def handle_incident_receipt(
     runId: str,
-    receipt_req: ReceiptRequest
+    request: Request
 ):
     """
     POST /v2/incidents/{runId}/receipts - Processes tool outcomes and approvals.
@@ -115,11 +118,22 @@ async def handle_incident_receipt(
             detail=f"Incident runId '{runId}' not found."
         )
 
+    body_bytes = await request.body()
+    try:
+        body_json = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON receipt.")
+
+    try:
+        receipt_req = ReceiptRequest(**body_json)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
     saved_hash, internal_state = existing_run
     receipt_id = receipt_req.receiptId
-    receipt_payload_hash = compute_payload_hash(receipt_req.model_dump())
+    receipt_payload_hash = compute_bytes_hash(body_bytes)
 
-    # Check for Receipt Replay or Conflict
+    # Receipt Replay or Conflict Check
     existing_receipt = get_receipt(receipt_id)
     if existing_receipt:
         rec_run_id, rec_hash = existing_receipt
@@ -136,11 +150,9 @@ async def handle_incident_receipt(
                 detail=f"Receipt ID '{receipt_id}' already exists with different payload content."
             )
 
-    # Advance State Machine
     updated_state, response_payload = process_receipt_and_advance(internal_state, receipt_req)
     updated_state["last_response_payload"] = response_payload
 
-    # Persist updated state and receipt record
     save_run(runId, saved_hash, updated_state)
     save_receipt(receipt_id, runId, receipt_payload_hash)
 
@@ -150,7 +162,7 @@ async def handle_incident_receipt(
 @app.get("/v2/incidents/{runId}")
 async def handle_get_incident(runId: str):
     """
-    GET /v2/incidents/{runId} - Returns the current stored state of the run.
+    GET /v2/incidents/{runId} - Returns current stored state of run.
     """
     existing_run = get_run(runId)
     if not existing_run:

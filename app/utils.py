@@ -20,11 +20,11 @@ def generate_opaque_id(prefix: str = "id") -> str:
     return f"{prefix}_{secrets.token_hex(6)}"
 
 
-def parse_traceparent(traceparent: Optional[str]) -> Tuple[str, str]:
+def parse_traceparent(traceparent: Optional[str]) -> Tuple[str, Optional[str]]:
     """
     Parses a W3C traceparent header of format '00-<trace_id>-<span_id>-01'.
     Returns (trace_id, parent_span_id).
-    If invalid or absent, returns fresh (new_trace_id, new_span_id).
+    If invalid or absent, returns fresh (new_trace_id, None).
     """
     if traceparent:
         parts = traceparent.split('-')
@@ -34,24 +34,23 @@ def parse_traceparent(traceparent: Optional[str]) -> Tuple[str, str]:
                 try:
                     int(trace_id, 16)
                     int(parent_span_id, 16)
-                    return trace_id, parent_span_id
+                    return trace_id.lower(), parent_span_id.lower()
                 except ValueError:
                     pass
-    return generate_trace_id(), generate_span_id()
+    return generate_trace_id(), None
 
 
 def format_traceparent(trace_id: str, span_id: str) -> str:
     """Formats traceparent string according to W3C Trace Context spec."""
-    return f"00-{trace_id}-{span_id}-01"
+    return f"00-{trace_id.lower()}-{span_id.lower()}-01"
 
 
 def extract_evidence_ids(transcript: str) -> List[str]:
     """
-    Extracts all evidence IDs from transcript lines starting with '[ev_...]'.
+    Extracts all evidence IDs enclosed in square brackets e.g. '[ev_101]', '[E1]'.
     """
-    pattern = r'\[(ev_[a-zA-Z0-9_\-]+)\]'
+    pattern = r'\[([a-zA-Z0-9_\-]+)\]'
     matches = re.findall(pattern, transcript)
-    # Deduplicate preserving order
     seen = set()
     result = []
     for m in matches:
@@ -61,9 +60,6 @@ def extract_evidence_ids(transcript: str) -> List[str]:
     return result
 
 
-def compute_payload_hash(data: dict) -> str:
-    """
-    Computes deterministic SHA-256 hash of a dictionary/json payload.
-    """
-    compact_json = json.dumps(data, sort_keys=True, separators=(',', ':'))
-    return hashlib.sha256(compact_json.encode('utf-8')).hexdigest()
+def compute_bytes_hash(raw_bytes: bytes) -> str:
+    """Computes SHA-256 hash of raw bytes."""
+    return hashlib.sha256(raw_bytes).hexdigest()
