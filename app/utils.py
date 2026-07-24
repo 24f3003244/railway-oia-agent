@@ -17,7 +17,7 @@ def generate_span_id() -> str:
 
 def generate_opaque_id(prefix: str = "id") -> str:
     """Generates a stable opaque ID of at least 8 characters."""
-    return f"{prefix}_{secrets.token_hex(6)}"
+    return f"{prefix}_{secrets.token_hex(8)}"
 
 
 def parse_traceparent(traceparent: Optional[str]) -> Tuple[str, Optional[str]]:
@@ -47,16 +47,29 @@ def format_traceparent(trace_id: str, span_id: str) -> str:
 
 def extract_evidence_ids(transcript: str) -> List[str]:
     """
-    Extracts all evidence IDs enclosed in square brackets e.g. '[ev_101]', '[E1]'.
+    Extracts evidence IDs from line prefixes starting with '[ID]'.
+    Falls back to inline bracketed IDs if line-prefix IDs are absent.
     """
-    pattern = r'\[([a-zA-Z0-9_\-]+)\]'
-    matches = re.findall(pattern, transcript)
-    seen = set()
     result = []
-    for m in matches:
-        if m not in seen:
-            seen.add(m)
-            result.append(m)
+    seen = set()
+
+    for line in transcript.splitlines():
+        line = line.strip()
+        m = re.match(r'^\[([a-zA-Z0-9_\-]+)\]', line)
+        if m:
+            ev_id = m.group(1)
+            if ev_id not in seen:
+                seen.add(ev_id)
+                result.append(ev_id)
+
+    if not result:
+        pattern = r'\[([a-zA-Z0-9_\-]+)\]'
+        matches = re.findall(pattern, transcript)
+        for m in matches:
+            if m not in seen:
+                seen.add(m)
+                result.append(m)
+
     return result
 
 

@@ -9,6 +9,33 @@ from app.utils import extract_evidence_ids
 logger = logging.getLogger(__name__)
 
 
+def validate_and_fix_args(
+    args: Dict[str, Any],
+    input_schema: Dict[str, Any],
+    incident_data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Ensures tool arguments conform strictly to input_schema property types and requirements."""
+    fixed = dict(args) if isinstance(args, dict) else {}
+    properties = input_schema.get("properties", {})
+    service = incident_data.get("service", "default-service")
+
+    for prop_name, prop_spec in properties.items():
+        prop_type = prop_spec.get("type", "string")
+        if prop_name not in fixed or fixed[prop_name] is None:
+            if "service" in prop_name.lower():
+                fixed[prop_name] = service
+            elif prop_type == "integer" or prop_type == "number":
+                fixed[prop_name] = 1
+            elif prop_type == "boolean":
+                fixed[prop_name] = True
+            elif prop_type == "array":
+                fixed[prop_name] = [service]
+            else:
+                fixed[prop_name] = prop_spec.get("default", service)
+
+    return fixed
+
+
 async def analyze_incident_with_openai(
     incident_data: Dict[str, Any],
     tool_catalog: List[Dict[str, Any]],
@@ -16,8 +43,8 @@ async def analyze_incident_with_openai(
     api_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Uses OpenAI chat completions to diagnose root cause, select evidence,
-    and decide diagnostic/effect tool calls based on tool input schemas.
+    Uses OpenAI chat completions with structured output JSON schema to diagnose root cause,
+    select evidence, and decide diagnostic and recovery effect tool calls.
     """
     allowed_causes = incident_data.get("allowedRootCauses", [])
     transcript = incident_data.get("transcript", "")
@@ -26,7 +53,6 @@ async def analyze_incident_with_openai(
     effect_tool_names = policy_data.get("effectTools", [])
     max_diagnostics = policy_data.get("maximumDiagnostics", 3)
 
-    # Separate diagnostic catalog and effect catalog
     diagnostic_catalog = [t for t in tool_catalog if t["name"] not in effect_tool_names]
     effect_catalog = [t for t in tool_catalog if t["name"] in effect_tool_names]
 
@@ -47,18 +73,17 @@ async def analyze_incident_with_openai(
     client = AsyncOpenAI(api_key=api_key)
 
     system_prompt = (
-        "You are an AI Incident-Response Agent (SRE expert).\n"
+        "You are an expert AI Incident-Response Agent (SRE expert).\n"
         "Analyze the incident transcript, identify the single root cause, cite evidence IDs, "
         "and select necessary diagnostic tool calls and one recovery effect call.\n"
-        "STRICT REQUIREMENTS:\n"
-        "1. rootCause: MUST be exactly one value from allowedRootCauses.\n"
-        "2. evidence: MUST be an array of 2 to 4 unique evidence IDs found in the transcript (e.g. ['ev_101', 'ev_102']).\n"
-        "3. diagnostics: MUST select 1 to maximumDiagnostics diagnostic calls ONLY from the Diagnostic Tool Catalog. "
-        "Arguments MUST strictly conform to the tool's inputSchema and incident context. "
-        "Each diagnostic dispatch MUST cite 1 to 4 evidence IDs from the chosen diagnosis evidence array.\n"
-        "4. effect: MUST select exactly 1 recovery effect tool from the Effect Tool Catalog. "
-        "Arguments MUST strictly conform to the tool's inputSchema.\n"
-        "5. Output valid JSON matching the exact schema."
+        "STRICT CONSTRAINTS:\n"
+        "1. rootCause MUST be chosen from allowedRootCauses.\n"
+        "2. evidence MUST be an array of 2 to 4 unique evidence IDs present in transcript lines.\n"
+        "3. diagnostics: Select 1 to maximumDiagnostics diagnostic tool calls ONLY from Diagnostic Tool Catalog. "
+        "Arguments MUST strictly conform to tool inputSchema and incident context. "
+        "Each diagnostic call MUST cite 1 to 4 evidence IDs from the chosen diagnosis evidence array.\n"
+        "4. effect: Select EXACTLY 1 recovery effect tool from Effect Tool Catalog. "
+        "Arguments MUST strictly conform to tool inputSchema."
     )
 
     user_prompt = f"""
@@ -67,7 +92,7 @@ Incident Details:
 - Service: {incident_data.get('service')}
 - Severity: {incident_data.get('severity')}
 
-Allowed Root Causes (Pick EXACTLY one):
+Allowed Root Causes:
 {json.dumps(allowed_causes, indent=2)}
 
 Available Evidence IDs in Transcript:
@@ -83,26 +108,55 @@ Effect Tool Catalog (Select EXACTLY 1):
 {json.dumps(effect_catalog, indent=2)}
 
 Maximum Diagnostics Allowed: {max_diagnostics}
-
-Respond in JSON format matching this schema:
-{{
-  "rootCause": "one value from allowedRootCauses",
-  "evidence": ["ev_...", "ev_..."],
-  "diagnostics": [
-    {{
-      "toolName": "name_from_diagnostic_catalog",
-      "arguments": {{ ... matching tool inputSchema ... }},
-      "evidence": ["ev_..."]
-    }}
-  ],
-  "effect": {{
-    "toolName": "name_from_effect_catalog",
-    "arguments": {{ ... matching tool inputSchema ... }}
-  }}
-}}
 """
 
     model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+    json_schema_spec = {
+        "name": "incident_analysis",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "rootCause": {
+                    "type": "string",
+                    "description": "Selected root cause string from allowedRootCauses."
+                },
+                "evidence": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Array of 2 to 4 evidence IDs."
+                },
+                "diagnostics": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "toolName": {"type": "string"},
+                            "arguments": {"type": "object"},
+                            "evidence": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        },
+                        "required": ["toolName", "arguments", "evidence"],
+                        "additionalProperties": False
+                    }
+                },
+                "effect": {
+                    "type": "object",
+                    "properties": {
+                        "toolName": {"type": "string"},
+                        "arguments": {"type": "object"}
+                    },
+                    "required": ["toolName", "arguments"],
+                    "additionalProperties": False
+                }
+            },
+            "required": ["rootCause", "evidence", "diagnostics", "effect"],
+            "additionalProperties": False
+        }
+    }
 
     try:
         response = await client.chat.completions.create(
@@ -111,7 +165,7 @@ Respond in JSON format matching this schema:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            response_format={"type": "json_object"},
+            response_format={"type": "json_schema", "json_schema": json_schema_spec},
             temperature=0.1
         )
 
@@ -130,12 +184,16 @@ Respond in JSON format matching this schema:
             cited = cited[:4]
         parsed["evidence"] = cited
 
-        # Ensure diagnostics <= max_diagnostics and uses diagnostic catalog tools
         diag_calls = parsed.get("diagnostics", [])
-        valid_diag_names = {t["name"] for t in diagnostic_catalog}
+        diagnostic_map = {t["name"]: t for t in diagnostic_catalog}
         filtered_diags = []
+
         for d in diag_calls:
-            if d.get("toolName") in valid_diag_names:
+            tool_name = d.get("toolName")
+            if tool_name in diagnostic_map:
+                schema = diagnostic_map[tool_name].get("inputSchema", {})
+                d["arguments"] = validate_and_fix_args(d.get("arguments", {}), schema, incident_data)
+                
                 d_ev = [e for e in d.get("evidence", []) if e in cited]
                 if not d_ev:
                     d_ev = [cited[0]]
@@ -143,26 +201,29 @@ Respond in JSON format matching this schema:
                 filtered_diags.append(d)
 
         if not filtered_diags and diagnostic_catalog:
-            # Fallback diagnostic tool
             dt = diagnostic_catalog[0]
             filtered_diags.append({
                 "toolName": dt["name"],
-                "arguments": generate_default_args(dt.get("inputSchema", {}), incident_data),
+                "arguments": validate_and_fix_args({}, dt.get("inputSchema", {}), incident_data),
                 "evidence": [cited[0]]
             })
 
         parsed["diagnostics"] = filtered_diags[:max_diagnostics]
 
-        # Ensure effect uses effect catalog tool
         eff = parsed.get("effect", {})
-        valid_eff_names = {t["name"] for t in effect_catalog}
-        if eff.get("toolName") not in valid_eff_names and effect_catalog:
+        effect_map = {t["name"]: t for t in effect_catalog}
+        eff_name = eff.get("toolName")
+        if eff_name in effect_map:
+            schema = effect_map[eff_name].get("inputSchema", {})
+            eff["arguments"] = validate_and_fix_args(eff.get("arguments", {}), schema, incident_data)
+        elif effect_catalog:
             et = effect_catalog[0]
-            parsed["effect"] = {
+            eff = {
                 "toolName": et["name"],
-                "arguments": generate_default_args(et.get("inputSchema", {}), incident_data)
+                "arguments": validate_and_fix_args({}, et.get("inputSchema", {}), incident_data)
             }
 
+        parsed["effect"] = eff
         return parsed
 
     except Exception as e:
@@ -172,28 +233,6 @@ Respond in JSON format matching this schema:
         )
         res["modelName"] = model_name
         return res
-
-
-def generate_default_args(input_schema: Dict[str, Any], incident_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Generates arguments adhering to inputSchema properties."""
-    args = {}
-    properties = input_schema.get("properties", {})
-    service = incident_data.get("service", "default-service")
-
-    for prop_name, prop_spec in properties.items():
-        prop_type = prop_spec.get("type", "string")
-        if "service" in prop_name:
-            args[prop_name] = service
-        elif prop_type == "integer" or prop_type == "number":
-            args[prop_name] = 1
-        elif prop_type == "boolean":
-            args[prop_name] = True
-        elif prop_type == "array":
-            args[prop_name] = [service]
-        else:
-            args[prop_name] = prop_spec.get("default", service)
-
-    return args
 
 
 def fallback_incident_analysis(
@@ -211,9 +250,10 @@ def fallback_incident_analysis(
 
     diagnostics = []
     for tool in diagnostic_catalog[:max_diagnostics]:
+        schema = tool.get("inputSchema", {})
         diagnostics.append({
             "toolName": tool["name"],
-            "arguments": generate_default_args(tool.get("inputSchema", {}), incident_data),
+            "arguments": validate_and_fix_args({}, schema, incident_data),
             "evidence": [evidence[0]]
         })
 
@@ -225,7 +265,7 @@ def fallback_incident_analysis(
         "diagnostics": diagnostics,
         "effect": {
             "toolName": chosen_effect_tool["name"],
-            "arguments": generate_default_args(chosen_effect_tool.get("inputSchema", {}), incident_data)
+            "arguments": validate_and_fix_args({}, chosen_effect_tool.get("inputSchema", {}), incident_data)
         },
         "modelName": os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     }
