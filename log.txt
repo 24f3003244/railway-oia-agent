@@ -1,0 +1,27 @@
+2026-07-24T08:40:34.501229461Z [inf]  Starting Container
+2026-07-24T08:40:36.473257076Z [err]  INFO:__main__:Starting server on 0.0.0.0:8080
+2026-07-24T08:40:36.473262570Z [err]  INFO:     Started server process [1]
+2026-07-24T08:40:36.473266442Z [err]  INFO:     Waiting for application startup.
+2026-07-24T08:40:36.473270418Z [err]  INFO:app.main:SQLite database initialized successfully.
+2026-07-24T08:40:36.473274304Z [err]  INFO:     Application startup complete.
+2026-07-24T08:40:36.473278167Z [err]  INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+2026-07-24T08:41:16.327732264Z [inf]  INFO:     100.64.0.2:42554 - "GET / HTTP/1.1" 200 OK
+2026-07-24T08:41:16.327734979Z [inf]  INFO:     100.64.0.3:28398 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+2026-07-24T08:41:36.227909959Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-24T08:41:36.227912973Z [inf]  INFO:     100.64.0.4:13282 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T08:41:44.471249898Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-24T08:41:44.477253494Z [inf]  INFO:     100.64.0.4:13282 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T08:41:47.255125623Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-24T08:41:47.273309893Z [inf]  INFO:     100.64.0.5:27888 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T08:41:56.883502036Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-24T08:41:56.895974776Z [inf]  INFO:     100.64.0.6:20452 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T08:41:59.774592698Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-24T08:41:59.774596617Z [inf]  INFO:     100.64.0.2:12592 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T08:42:04.940234094Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-24T08:42:04.953739744Z [inf]  INFO:     100.64.0.2:12592 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T08:42:07.831785137Z [err]  INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-24T08:42:07.831790394Z [inf]  INFO:     100.64.0.6:46296 - "POST /v2/incidents HTTP/1.1" 200 OK
+2026-07-24T08:42:08.126107020Z [inf]  INFO:     100.64.0.7:40180 - "POST /v2/incidents HTTP/1.1" 400 Bad Request
+2026-07-24T08:42:08.760139997Z [err]  WARNING:app.main:Conflict detected for runId=run_Kj7a77pcecFwdKT6RmKL9v. Payload hash mismatch.
+2026-07-24T08:42:08.760144073Z [inf]  INFO:     100.64.0.8:51676 - "POST /v2/incidents HTTP/1.1" 409 Conflict
+2026-07-24T08:42:08.760147977Z [inf]  INFO:     100.64.0.8:51676 - "GET /v2/incidents/run_Kj7a77pcecFwdKT6RmKL9v HTTP/1.1" 200 OK

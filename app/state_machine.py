@@ -30,21 +30,21 @@ async def create_new_incident_run(
         run_id=req.runId,
         public_marker=req.publicMarker,
         trace_id=trace_id,
-        server_parent_span_id=server_span_id
+        server_span_id=server_span_id
     )
 
-    # Convert tool catalog to list of dicts for planner
     tool_catalog_list = [t.model_dump() for t in req.toolCatalog]
+    policy_dict = req.policy.model_dump()
 
-    # Call AI Model Planner
+    # Call AI Model Planner passing policy to isolate diagnostic tools vs effect tools
     analysis = await analyze_incident_with_openai(
         incident_data=req.incident.model_dump(),
         tool_catalog=tool_catalog_list,
-        maximum_diagnostics=req.policy.maximumDiagnostics,
+        policy_data=policy_dict,
         api_key=api_key
     )
 
-    # Record model span in OTLP
+    # Record exactly one chat incident-plan span in OTLP
     otlp.add_model_span(
         model_name=analysis.get("modelName", "gpt-4o-mini"),
         span_id=model_span_id
@@ -58,12 +58,12 @@ async def create_new_incident_run(
     # Formulate Diagnostic Dispatches
     dispatches = []
     action_log = []
-    diagnostic_span_tracking = []
+    diagnostic_tracking = []
 
     for d_spec in analysis.get("diagnostics", []):
         tool_name = d_spec["toolName"]
-        action_id = generate_opaque_id("act")
-        call_id = generate_opaque_id("call")
+        action_id = generate_opaque_id("act_diag")
+        call_id = generate_opaque_id("call_diag")
         logical_span_id = generate_span_id()
         client_span_id = generate_span_id()
         dispatch_traceparent = format_traceparent(trace_id, client_span_id)
@@ -84,7 +84,7 @@ async def create_new_incident_run(
         }
 
         # Add logical tool span to OTLP
-        logical_span = otlp.add_logical_tool_span(
+        otlp.add_logical_tool_span(
             tool_name=tool_name,
             action_id=action_id,
             call_id=call_id,
@@ -94,13 +94,12 @@ async def create_new_incident_run(
         dispatches.append(dispatch_item)
         action_log.append(dispatch_item)
 
-        diagnostic_span_tracking.append({
+        diagnostic_tracking.append({
             "actionId": action_id,
             "callId": call_id,
             "toolName": tool_name,
             "logicalSpanId": logical_span_id,
-            "clientSpanId": client_span_id,
-            "logicalSpan": logical_span
+            "clientSpanId": client_span_id
         })
 
     internal_state = {
@@ -110,18 +109,18 @@ async def create_new_incident_run(
         "traceId": trace_id,
         "serverSpanId": server_span_id,
         "diagnosis": diagnosis,
-        "policy": req.policy.model_dump(),
+        "policy": policy_dict,
         "toolCatalog": tool_catalog_list,
         "plannedEffect": analysis.get("effect"),
         "dispatches": dispatches,
         "approvals": [],
         "actionLog": action_log,
         "receiptLog": [],
-        "diagnosticTracking": diagnostic_span_tracking,
+        "diagnosticTracking": diagnostic_tracking,
         "pendingApproval": None,
         "chosenEffect": None,
         "suppressed": [],
-        "otlpData": otlp.to_dict()
+        "otlpBuilder": otlp
     }
 
     response_payload = {
@@ -143,59 +142,11 @@ def process_receipt_and_advance(
     Processes incoming outcome or approval receipts and transitions run state.
     Returns (updated_internal_state, response_payload).
     """
-    otlp_data = internal_state.get("otlpData", {"resourceSpans": [{"scopeSpans": [{"spans": []}]}]})
-    spans_list = otlp_data["resourceSpans"][0]["scopeSpans"][0]["spans"]
-    
+    otlp: OTLPBuilder = internal_state["otlpBuilder"]
     receipt_log = internal_state.get("receiptLog", [])
     action_log = internal_state.get("actionLog", [])
     diagnostic_tracking = internal_state.get("diagnosticTracking", [])
     policy = internal_state.get("policy", {})
-
-    trace_id = internal_state["traceId"]
-    agent_span_id = spans_list[1]["spanId"] if len(spans_list) > 1 else generate_span_id()
-    public_marker = internal_state["publicMarker"]
-    run_id = internal_state["runId"]
-
-    base_attrs = [
-        {"key": "ga5.run.id", "value": {"stringValue": run_id}},
-        {"key": "ga5.public.marker", "value": {"stringValue": public_marker}}
-    ]
-
-    # Helper to add physical span directly to spans_list
-    def add_physical_tool_span(tool_name, action_id, logical_span_id, client_span_id, attempt, receipt_id=None, nonce=None, status_code=200, error_type=None):
-        attrs = list(base_attrs) + [
-            {"key": "ga5.action.id", "value": {"stringValue": action_id}},
-            {"key": "ga5.attempt", "value": {"intValue": str(attempt)}},
-            {"key": "http.request.method", "value": {"stringValue": "POST"}},
-            {"key": "http.request.resend_count", "value": {"intValue": str(max(0, attempt - 1))}}
-        ]
-        if receipt_id:
-            attrs.append({"key": "ga5.receipt.id", "value": {"stringValue": receipt_id}})
-        if nonce:
-            attrs.append({"key": "ga5.receipt.nonce", "value": {"stringValue": nonce}})
-
-        span_status = {}
-        if status_code == 503:
-            span_status = {"code": 2}
-            attrs.append({"key": "error.type", "value": {"stringValue": "503"}})
-        elif error_type == "timeout" or status_code == 0:
-            span_status = {"code": 2}
-            attrs.append({"key": "error.type", "value": {"stringValue": "timeout"}})
-        elif status_code == 200:
-            span_status = {"code": 1}
-
-        span = {
-            "traceId": trace_id,
-            "spanId": client_span_id,
-            "parentSpanId": logical_span_id,
-            "name": f"POST tool/{tool_name}",
-            "kind": 3,
-            "startTimeUnixNano": "1700000000000000000",
-            "endTimeUnixNano": "1700000000010000000",
-            "attributes": attrs,
-            "status": span_status
-        }
-        spans_list.append(span)
 
     # 1. Process Outcome Receipts
     if receipt_req.outcomes:
@@ -215,22 +166,25 @@ def process_receipt_and_advance(
 
             matching_dt = next((d for d in diagnostic_tracking if d["actionId"] == outcome.actionId), None)
             if matching_dt:
-                add_physical_tool_span(
+                # Add physical tool CLIENT span to OTLP
+                otlp.add_physical_tool_client_span(
                     tool_name=matching_dt["toolName"],
                     action_id=outcome.actionId,
                     logical_span_id=matching_dt["logicalSpanId"],
                     client_span_id=matching_dt["clientSpanId"],
                     attempt=outcome.attempt,
                     receipt_id=receipt_req.receiptId,
-                    nonce=outcome.nonce,
+                    receipt_nonce=outcome.nonce,
                     status_code=outcome.status,
+                    result_class=outcome.resultClass,
                     error_type=outcome.errorType
                 )
 
+                # Check 503 retry condition (exactly one retry allowed)
                 if outcome.status == 503 and outcome.attempt == 1:
                     new_client_span_id = generate_span_id()
                     matching_dt["clientSpanId"] = new_client_span_id
-                    retry_traceparent = format_traceparent(trace_id, new_client_span_id)
+                    retry_traceparent = format_traceparent(internal_state["traceId"], new_client_span_id)
 
                     retry_dispatch = {
                         "actionId": outcome.actionId,
@@ -255,12 +209,16 @@ def process_receipt_and_advance(
                     internal_state["actionLog"] = action_log
                     return internal_state, response_payload
 
+                # Check Timeout condition
                 if outcome.status == 0 or outcome.errorType == "timeout":
                     internal_state["status"] = "failed"
-                    internal_state["suppressed"] = [internal_state.get("plannedEffect", {}).get("toolName", "effect_tool")]
+                    planned_eff_name = internal_state.get("plannedEffect", {}).get("toolName", "effect_tool")
+                    internal_state["suppressed"] = [planned_eff_name]
+
                     response_payload = build_final_response(internal_state, status="failed")
                     return internal_state, response_payload
 
+            # Check if this was an effect outcome receipt
             pending_effect = internal_state.get("pendingEffectDispatch")
             if pending_effect and pending_effect["actionId"] == outcome.actionId:
                 if outcome.status == 200:
@@ -286,30 +244,15 @@ def process_receipt_and_advance(
             pending_app = internal_state.get("pendingApproval")
             if pending_app and pending_app["approvalId"] == app.approvalId:
                 if app.decision == "approved":
-                    # Add approval gate span
-                    appr_span = {
-                        "traceId": trace_id,
-                        "spanId": generate_span_id(),
-                        "parentSpanId": agent_span_id,
-                        "name": "approval_gate",
-                        "kind": 1,
-                        "startTimeUnixNano": "1700000000000000000",
-                        "endTimeUnixNano": "1700000000010000000",
-                        "attributes": list(base_attrs) + [
-                            {"key": "ga5.approval.id", "value": {"stringValue": app.approvalId}},
-                            {"key": "ga5.approval.receipt_nonce", "value": {"stringValue": app.nonce}}
-                        ],
-                        "status": {}
-                    }
-                    spans_list.append(appr_span)
+                    otlp.add_approval_gate_span(approval_id=app.approvalId, receipt_nonce=app.nonce)
 
                     effect_spec = internal_state.get("plannedEffect", {})
                     tool_name = effect_spec.get("toolName", "scale_service")
-                    action_id = pending_app["actionId"]
+                    action_id = pending_app["actionId"]  # reserve same action ID
                     call_id = generate_opaque_id("call_eff")
                     logical_span_id = generate_span_id()
                     client_span_id = generate_span_id()
-                    traceparent = format_traceparent(trace_id, client_span_id)
+                    traceparent = format_traceparent(internal_state["traceId"], client_span_id)
 
                     effect_dispatch = {
                         "actionId": action_id,
@@ -326,31 +269,19 @@ def process_receipt_and_advance(
                     action_log.append(effect_dispatch)
                     internal_state["pendingEffectDispatch"] = effect_dispatch
 
-                    logical_span = {
-                        "traceId": trace_id,
-                        "spanId": logical_span_id,
-                        "parentSpanId": agent_span_id,
-                        "name": f"execute_tool {tool_name}",
-                        "kind": 1,
-                        "startTimeUnixNano": "1700000000000000000",
-                        "endTimeUnixNano": "1700000000010000000",
-                        "attributes": list(base_attrs) + [
-                            {"key": "ga5.action.id", "value": {"stringValue": action_id}},
-                            {"key": "gen_ai.tool.name", "value": {"stringValue": tool_name}},
-                            {"key": "gen_ai.tool.call.id", "value": {"stringValue": call_id}},
-                            {"key": "gen_ai.operation.name", "value": {"stringValue": "execute_tool"}}
-                        ],
-                        "status": {}
-                    }
-                    spans_list.append(logical_span)
+                    otlp.add_logical_tool_span(
+                        tool_name=tool_name,
+                        action_id=action_id,
+                        call_id=call_id,
+                        span_id=logical_span_id
+                    )
 
                     diagnostic_tracking.append({
                         "actionId": action_id,
                         "callId": call_id,
                         "toolName": tool_name,
                         "logicalSpanId": logical_span_id,
-                        "clientSpanId": client_span_id,
-                        "logicalSpan": logical_span
+                        "clientSpanId": client_span_id
                     })
 
                     response_payload = {
@@ -366,7 +297,7 @@ def process_receipt_and_advance(
 
     # 3. Check Diagnostic Completion & Issue Effect or Approval Request
     if not internal_state.get("diagnosticsJoined", False):
-        original_action_ids = [d["actionId"] for d in diagnostic_tracking if d.get("actionId")]
+        original_action_ids = [d["actionId"] for d in diagnostic_tracking]
         successful_action_ids = set()
         for r in receipt_log:
             if r.get("status") == 200 and r.get("resultClass") == "diagnosis_confirmed":
@@ -375,21 +306,9 @@ def process_receipt_and_advance(
         if all(aid in successful_action_ids for aid in original_action_ids):
             internal_state["diagnosticsJoined"] = True
 
-            # Add incident.join span linking diagnostic spans
-            links = [{"traceId": d["logicalSpan"]["traceId"], "spanId": d["logicalSpan"]["spanId"]} for d in diagnostic_tracking if "logicalSpan" in d]
-            join_span = {
-                "traceId": trace_id,
-                "spanId": generate_span_id(),
-                "parentSpanId": agent_span_id,
-                "name": "incident.join",
-                "kind": 1,
-                "startTimeUnixNano": "1700000000000000000",
-                "endTimeUnixNano": "1700000000010000000",
-                "attributes": list(base_attrs),
-                "status": {},
-                "links": links
-            }
-            spans_list.append(join_span)
+            # Add incident.join span linking all diagnostic logical spans
+            logical_span_ids = [d["logicalSpanId"] for d in diagnostic_tracking]
+            otlp.add_incident_join_span(logical_span_ids)
 
             planned_effect = internal_state.get("plannedEffect") or {"toolName": "scale_service", "arguments": {}}
             effect_tool_name = planned_effect.get("toolName", "scale_service")
@@ -407,22 +326,7 @@ def process_receipt_and_advance(
                     "argumentsDigest": digest
                 }
                 internal_state["pendingApproval"] = approval_req_obj
-
-                # Add approval gate span
-                appr_span = {
-                    "traceId": trace_id,
-                    "spanId": generate_span_id(),
-                    "parentSpanId": agent_span_id,
-                    "name": "approval_gate",
-                    "kind": 1,
-                    "startTimeUnixNano": "1700000000000000000",
-                    "endTimeUnixNano": "1700000000010000000",
-                    "attributes": list(base_attrs) + [
-                        {"key": "ga5.approval.id", "value": {"stringValue": approval_id}}
-                    ],
-                    "status": {}
-                }
-                spans_list.append(appr_span)
+                otlp.add_approval_gate_span(approval_id=approval_id)
 
                 response_payload = {
                     "status": "waiting",
@@ -437,7 +341,7 @@ def process_receipt_and_advance(
                 call_id = generate_opaque_id("call_eff")
                 logical_span_id = generate_span_id()
                 client_span_id = generate_span_id()
-                traceparent = format_traceparent(trace_id, client_span_id)
+                traceparent = format_traceparent(internal_state["traceId"], client_span_id)
 
                 effect_dispatch = {
                     "actionId": action_id,
@@ -452,31 +356,19 @@ def process_receipt_and_advance(
                 action_log.append(effect_dispatch)
                 internal_state["pendingEffectDispatch"] = effect_dispatch
 
-                logical_span = {
-                    "traceId": trace_id,
-                    "spanId": logical_span_id,
-                    "parentSpanId": agent_span_id,
-                    "name": f"execute_tool {effect_tool_name}",
-                    "kind": 1,
-                    "startTimeUnixNano": "1700000000000000000",
-                    "endTimeUnixNano": "1700000000010000000",
-                    "attributes": list(base_attrs) + [
-                        {"key": "ga5.action.id", "value": {"stringValue": action_id}},
-                        {"key": "gen_ai.tool.name", "value": {"stringValue": effect_tool_name}},
-                        {"key": "gen_ai.tool.call.id", "value": {"stringValue": call_id}},
-                        {"key": "gen_ai.operation.name", "value": {"stringValue": "execute_tool"}}
-                    ],
-                    "status": {}
-                }
-                spans_list.append(logical_span)
+                otlp.add_logical_tool_span(
+                    tool_name=effect_tool_name,
+                    action_id=action_id,
+                    call_id=call_id,
+                    span_id=logical_span_id
+                )
 
                 diagnostic_tracking.append({
                     "actionId": action_id,
                     "callId": call_id,
                     "toolName": effect_tool_name,
                     "logicalSpanId": logical_span_id,
-                    "clientSpanId": client_span_id,
-                    "logicalSpan": logical_span
+                    "clientSpanId": client_span_id
                 })
 
                 response_payload = {
@@ -498,7 +390,7 @@ def process_receipt_and_advance(
 
 def build_final_response(internal_state: Dict[str, Any], status: str) -> Dict[str, Any]:
     """Formats terminal final response or stored GET state."""
-    otlp_data = internal_state.get("otlpData", {"resourceSpans": [{"scopeSpans": [{"spans": []}]}]})
+    otlp: OTLPBuilder = internal_state["otlpBuilder"]
     return {
         "runId": internal_state["runId"],
         "status": status,
@@ -507,5 +399,5 @@ def build_final_response(internal_state: Dict[str, Any], status: str) -> Dict[st
         "suppressed": internal_state.get("suppressed", []),
         "actionLog": internal_state.get("actionLog", []),
         "receiptLog": internal_state.get("receiptLog", []),
-        "otlp": otlp_data
+        "otlp": otlp.to_dict()
     }

@@ -12,37 +12,53 @@ logger = logging.getLogger(__name__)
 async def analyze_incident_with_openai(
     incident_data: Dict[str, Any],
     tool_catalog: List[Dict[str, Any]],
-    maximum_diagnostics: int,
+    policy_data: Dict[str, Any],
     api_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Uses OpenAI chat completions to diagnose root cause, select evidence,
-    and decide diagnostic/effect tool calls.
+    and decide diagnostic/effect tool calls based on tool input schemas.
     """
     allowed_causes = incident_data.get("allowedRootCauses", [])
     transcript = incident_data.get("transcript", "")
     all_evidence = extract_evidence_ids(transcript)
+
+    effect_tool_names = policy_data.get("effectTools", [])
+    max_diagnostics = policy_data.get("maximumDiagnostics", 3)
+
+    # Separate diagnostic catalog and effect catalog
+    diagnostic_catalog = [t for t in tool_catalog if t["name"] not in effect_tool_names]
+    effect_catalog = [t for t in tool_catalog if t["name"] in effect_tool_names]
+
+    if not diagnostic_catalog:
+        diagnostic_catalog = tool_catalog
+    if not effect_catalog:
+        effect_catalog = tool_catalog
 
     if not api_key:
         api_key = os.environ.get("OPENAI_API_KEY")
 
     if not api_key:
         logger.warning("No OPENAI_API_KEY found. Using heuristic fallback analysis.")
-        return fallback_incident_analysis(incident_data, tool_catalog, maximum_diagnostics, all_evidence)
+        return fallback_incident_analysis(
+            incident_data, diagnostic_catalog, effect_catalog, max_diagnostics, all_evidence
+        )
 
     client = AsyncOpenAI(api_key=api_key)
 
     system_prompt = (
-        "You are an expert site reliability engineering (SRE) AI agent. "
-        "Your task is to analyze noisy incident transcripts, determine the single most likely root cause, "
-        "cite 2 to 4 evidence IDs found in the transcript, choose 1 to 3 diagnostic tool calls, "
-        "and choose 1 primary recovery effect tool call.\n"
-        "RULES:\n"
-        "1. rootCause MUST be exactly one of the allowed root causes provided.\n"
-        "2. evidence MUST be a array of 2 to 4 exact evidence IDs present in transcript (e.g. ['ev_1', 'ev_2']).\n"
-        "3. Choose 1 to maximumDiagnostics diagnostic tool calls from toolCatalog.\n"
-        "4. Choose 1 recovery effect tool call.\n"
-        "5. Output valid JSON matching the exact schema specified."
+        "You are an AI Incident-Response Agent (SRE expert).\n"
+        "Analyze the incident transcript, identify the single root cause, cite evidence IDs, "
+        "and select necessary diagnostic tool calls and one recovery effect call.\n"
+        "STRICT REQUIREMENTS:\n"
+        "1. rootCause: MUST be exactly one value from allowedRootCauses.\n"
+        "2. evidence: MUST be an array of 2 to 4 unique evidence IDs found in the transcript (e.g. ['ev_101', 'ev_102']).\n"
+        "3. diagnostics: MUST select 1 to maximumDiagnostics diagnostic calls ONLY from the Diagnostic Tool Catalog. "
+        "Arguments MUST strictly conform to the tool's inputSchema and incident context. "
+        "Each diagnostic dispatch MUST cite 1 to 4 evidence IDs from the chosen diagnosis evidence array.\n"
+        "4. effect: MUST select exactly 1 recovery effect tool from the Effect Tool Catalog. "
+        "Arguments MUST strictly conform to the tool's inputSchema.\n"
+        "5. Output valid JSON matching the exact schema."
     )
 
     user_prompt = f"""
@@ -51,31 +67,37 @@ Incident Details:
 - Service: {incident_data.get('service')}
 - Severity: {incident_data.get('severity')}
 
-Allowed Root Causes: {json.dumps(allowed_causes)}
-Available Evidence IDs in Transcript: {json.dumps(all_evidence)}
+Allowed Root Causes (Pick EXACTLY one):
+{json.dumps(allowed_causes, indent=2)}
 
-Transcript:
+Available Evidence IDs in Transcript:
+{json.dumps(all_evidence, indent=2)}
+
+Transcript Evidence:
 {transcript}
 
-Tool Catalog:
-{json.dumps(tool_catalog)}
+Diagnostic Tool Catalog (Select 1 to {max_diagnostics}):
+{json.dumps(diagnostic_catalog, indent=2)}
 
-Maximum Diagnostic Calls Allowed: {maximum_diagnostics}
+Effect Tool Catalog (Select EXACTLY 1):
+{json.dumps(effect_catalog, indent=2)}
 
-Respond with JSON format:
+Maximum Diagnostics Allowed: {max_diagnostics}
+
+Respond in JSON format matching this schema:
 {{
-  "rootCause": "one allowed value",
+  "rootCause": "one value from allowedRootCauses",
   "evidence": ["ev_...", "ev_..."],
   "diagnostics": [
     {{
-      "toolName": "name_from_catalog",
-      "arguments": {{...}},
+      "toolName": "name_from_diagnostic_catalog",
+      "arguments": {{ ... matching tool inputSchema ... }},
       "evidence": ["ev_..."]
     }}
   ],
   "effect": {{
-    "toolName": "name_from_catalog",
-    "arguments": {{...}}
+    "toolName": "name_from_effect_catalog",
+    "arguments": {{ ... matching tool inputSchema ... }}
   }}
 }}
 """
@@ -101,64 +123,101 @@ Respond with JSON format:
         if parsed.get("rootCause") not in allowed_causes and allowed_causes:
             parsed["rootCause"] = allowed_causes[0]
 
-        # Ensure evidence valid and 2..4 elements
         cited = [e for e in parsed.get("evidence", []) if e in all_evidence]
         if len(cited) < 2:
-            cited = all_evidence[:min(4, max(2, len(all_evidence)))]
+            cited = all_evidence[:min(4, max(2, len(all_evidence)))] if all_evidence else ["ev_1", "ev_2"]
         elif len(cited) > 4:
             cited = cited[:4]
         parsed["evidence"] = cited
 
-        # Ensure diagnostics <= maximum_diagnostics
+        # Ensure diagnostics <= max_diagnostics and uses diagnostic catalog tools
         diag_calls = parsed.get("diagnostics", [])
-        if len(diag_calls) > maximum_diagnostics:
-            parsed["diagnostics"] = diag_calls[:maximum_diagnostics]
+        valid_diag_names = {t["name"] for t in diagnostic_catalog}
+        filtered_diags = []
+        for d in diag_calls:
+            if d.get("toolName") in valid_diag_names:
+                d_ev = [e for e in d.get("evidence", []) if e in cited]
+                if not d_ev:
+                    d_ev = [cited[0]]
+                d["evidence"] = list(dict.fromkeys(d_ev))
+                filtered_diags.append(d)
 
-        # Ensure diagnostic evidence cites from diagnosis evidence
-        for d in parsed.get("diagnostics", []):
-            d_ev = [e for e in d.get("evidence", []) if e in cited]
-            if not d_ev:
-                d_ev = [cited[0]]
-            d["evidence"] = list(dict.fromkeys(d_ev))  # unique
+        if not filtered_diags and diagnostic_catalog:
+            # Fallback diagnostic tool
+            dt = diagnostic_catalog[0]
+            filtered_diags.append({
+                "toolName": dt["name"],
+                "arguments": generate_default_args(dt.get("inputSchema", {}), incident_data),
+                "evidence": [cited[0]]
+            })
+
+        parsed["diagnostics"] = filtered_diags[:max_diagnostics]
+
+        # Ensure effect uses effect catalog tool
+        eff = parsed.get("effect", {})
+        valid_eff_names = {t["name"] for t in effect_catalog}
+        if eff.get("toolName") not in valid_eff_names and effect_catalog:
+            et = effect_catalog[0]
+            parsed["effect"] = {
+                "toolName": et["name"],
+                "arguments": generate_default_args(et.get("inputSchema", {}), incident_data)
+            }
 
         return parsed
 
     except Exception as e:
         logger.error(f"OpenAI API call failed: {e}. Falling back to heuristic planner.")
-        res = fallback_incident_analysis(incident_data, tool_catalog, maximum_diagnostics, all_evidence)
+        res = fallback_incident_analysis(
+            incident_data, diagnostic_catalog, effect_catalog, max_diagnostics, all_evidence
+        )
         res["modelName"] = model_name
         return res
 
 
+def generate_default_args(input_schema: Dict[str, Any], incident_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Generates arguments adhering to inputSchema properties."""
+    args = {}
+    properties = input_schema.get("properties", {})
+    service = incident_data.get("service", "default-service")
+
+    for prop_name, prop_spec in properties.items():
+        prop_type = prop_spec.get("type", "string")
+        if "service" in prop_name:
+            args[prop_name] = service
+        elif prop_type == "integer" or prop_type == "number":
+            args[prop_name] = 1
+        elif prop_type == "boolean":
+            args[prop_name] = True
+        elif prop_type == "array":
+            args[prop_name] = [service]
+        else:
+            args[prop_name] = prop_spec.get("default", service)
+
+    return args
+
+
 def fallback_incident_analysis(
     incident_data: Dict[str, Any],
-    tool_catalog: List[Dict[str, Any]],
-    maximum_diagnostics: int,
+    diagnostic_catalog: List[Dict[str, Any]],
+    effect_catalog: List[Dict[str, Any]],
+    max_diagnostics: int,
     all_evidence: List[str]
 ) -> Dict[str, Any]:
-    """Fallback heuristic analyzer if OpenAI API is unavailable or fails."""
+    """Fallback heuristic analyzer."""
     allowed_causes = incident_data.get("allowedRootCauses", [])
     root_cause = allowed_causes[0] if allowed_causes else "unknown_failure"
 
     evidence = all_evidence[:min(4, max(2, len(all_evidence)))] if all_evidence else ["ev_1", "ev_2"]
 
-    diagnostic_tools = [t for t in tool_catalog if "query" in t["name"] or "check" in t["name"] or "get" in t["name"]]
-    if not diagnostic_tools:
-        diagnostic_tools = tool_catalog[:1]
-
     diagnostics = []
-    for tool in diagnostic_tools[:maximum_diagnostics]:
+    for tool in diagnostic_catalog[:max_diagnostics]:
         diagnostics.append({
             "toolName": tool["name"],
-            "arguments": {"service": incident_data.get("service", "default"), "query": "incident_root_cause"},
+            "arguments": generate_default_args(tool.get("inputSchema", {}), incident_data),
             "evidence": [evidence[0]]
         })
 
-    effect_tools = [t for t in tool_catalog if t not in diagnostic_tools]
-    if not effect_tools:
-        effect_tools = tool_catalog[-1:] if tool_catalog else [{"name": "scale_service", "inputSchema": {}}]
-    
-    chosen_effect_tool = effect_tools[0]
+    chosen_effect_tool = effect_catalog[0] if effect_catalog else {"name": "scale_service", "inputSchema": {}}
 
     return {
         "rootCause": root_cause,
@@ -166,7 +225,7 @@ def fallback_incident_analysis(
         "diagnostics": diagnostics,
         "effect": {
             "toolName": chosen_effect_tool["name"],
-            "arguments": {"service": incident_data.get("service", "default"), "action": "recover"}
+            "arguments": generate_default_args(chosen_effect_tool.get("inputSchema", {}), incident_data)
         },
         "modelName": os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     }

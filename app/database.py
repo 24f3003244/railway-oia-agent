@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from typing import Optional, Tuple, Dict, Any
+from app.telemetry import OTLPBuilder
 
 DB_PATH = "incidents.db"
 
@@ -30,27 +31,48 @@ def init_db():
     conn.close()
 
 
+def serialize_state(state_dict: Dict[str, Any]) -> str:
+    d = dict(state_dict)
+    otlp = d.get("otlpBuilder")
+    if isinstance(otlp, OTLPBuilder):
+        d["otlp_data"] = otlp.to_dict()
+        del d["otlpBuilder"]
+    return json.dumps(d)
+
+
+def deserialize_state(state_json: str) -> Dict[str, Any]:
+    d = json.loads(state_json)
+    if "otlp_data" in d and "otlpBuilder" not in d:
+        otlp_data = d["otlp_data"]
+        # Reconstruct OTLPBuilder
+        otlp = OTLPBuilder(
+            run_id=d["runId"],
+            public_marker=d["publicMarker"],
+            trace_id=d["traceId"],
+            server_span_id=d["serverSpanId"]
+        )
+        # Restore spans list
+        spans = otlp_data.get("resourceSpans", [{}])[0].get("scopeSpans", [{}])[0].get("spans", [])
+        otlp.spans = spans
+        d["otlpBuilder"] = otlp
+    return d
+
+
 def get_run(run_id: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-    """
-    Returns (payload_hash, state_dict) for given run_id or None if not found.
-    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT payload_hash, state_json FROM runs WHERE run_id = ?", (run_id,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        return row[0], json.loads(row[1])
+        return row[0], deserialize_state(row[1])
     return None
 
 
 def save_run(run_id: str, payload_hash: str, state_dict: Dict[str, Any]):
-    """
-    Saves or updates run state.
-    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    state_json = json.dumps(state_dict)
+    state_json = serialize_state(state_dict)
     cursor.execute("""
         INSERT INTO runs (run_id, payload_hash, state_json, updated_at)
         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -63,9 +85,6 @@ def save_run(run_id: str, payload_hash: str, state_dict: Dict[str, Any]):
 
 
 def get_receipt(receipt_id: str) -> Optional[Tuple[str, str]]:
-    """
-    Returns (run_id, payload_hash) for given receipt_id or None if not found.
-    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT run_id, payload_hash FROM receipts WHERE receipt_id = ?", (receipt_id,))
@@ -77,9 +96,6 @@ def get_receipt(receipt_id: str) -> Optional[Tuple[str, str]]:
 
 
 def save_receipt(receipt_id: str, run_id: str, payload_hash: str):
-    """
-    Saves processed receipt_id record.
-    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
