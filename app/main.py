@@ -17,8 +17,8 @@ from app.state_machine import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 init_db()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -165,3 +165,14 @@ async def handle_get_incident(runId: str):
         response_payload = build_final_response(internal_state, internal_state.get("status", "waiting"))
 
     return JSONResponse(content=response_payload)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port_env = os.environ.get("PORT", "8000")
+    try:
+        port = int(port_env)
+    except ValueError:
+        port = 8000
+    logger.info(f"Starting server on 0.0.0.0:{port}")
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port)
