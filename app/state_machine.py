@@ -22,7 +22,8 @@ async def create_new_incident_run(
     Initializes a new incident run: parses traceparent, calls OpenAI model planner,
     formulates initial diagnostic dispatches, and creates OTLP trace structure.
     """
-    trace_id, server_span_id = parse_traceparent(incoming_traceparent)
+    trace_id, parent_span_id = parse_traceparent(incoming_traceparent)
+    server_span_id = generate_span_id()
     model_span_id = generate_span_id()
 
     # Instantiate OTLP Builder
@@ -30,7 +31,8 @@ async def create_new_incident_run(
         run_id=req.runId,
         public_marker=req.publicMarker,
         trace_id=trace_id,
-        server_span_id=server_span_id
+        server_span_id=server_span_id,
+        parent_span_id=parent_span_id
     )
 
     tool_catalog_list = [t.model_dump() for t in req.toolCatalog]
@@ -108,6 +110,7 @@ async def create_new_incident_run(
         "publicMarker": req.publicMarker,
         "traceId": trace_id,
         "serverSpanId": server_span_id,
+        "parentSpanId": parent_span_id,
         "diagnosis": diagnosis,
         "policy": policy_dict,
         "toolCatalog": tool_catalog_list,

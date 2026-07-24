@@ -16,11 +16,12 @@ class OTLPBuilder:
     Constructs and maintains compliant OpenTelemetry JSON traces for incident runs.
     """
 
-    def __init__(self, run_id: str, public_marker: str, trace_id: str, server_span_id: str):
+    def __init__(self, run_id: str, public_marker: str, trace_id: str, server_span_id: str, parent_span_id: Optional[str] = None):
         self.run_id = run_id
         self.public_marker = public_marker
         self.trace_id = trace_id
         self.server_span_id = server_span_id
+        self.parent_span_id = parent_span_id
         self.agent_span_id = generate_span_id()
         self.spans: List[Dict[str, Any]] = []
 
@@ -30,7 +31,7 @@ class OTLPBuilder:
         ]
 
         # 1. SERVER POST /v2/incidents
-        self.spans.append({
+        server_span = {
             "traceId": self.trace_id,
             "spanId": self.server_span_id,
             "name": "POST /v2/incidents",
@@ -39,7 +40,10 @@ class OTLPBuilder:
             "endTimeUnixNano": "1700000000010000000",
             "attributes": list(self.base_attrs),
             "status": {}
-        })
+        }
+        if self.parent_span_id:
+            server_span["parentSpanId"] = self.parent_span_id
+        self.spans.append(server_span)
 
         # 2. INTERNAL invoke_agent incident-response
         self.spans.append({
@@ -160,7 +164,6 @@ class OTLPBuilder:
 
     def add_approval_gate_span(self, approval_id: str, receipt_nonce: Optional[str] = None):
         """Adds or updates INTERNAL approval_gate span."""
-        # Check if approval_gate span already exists
         existing = next((s for s in self.spans if s["name"] == "approval_gate"), None)
         if existing:
             if receipt_nonce:

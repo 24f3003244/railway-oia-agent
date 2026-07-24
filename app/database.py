@@ -44,14 +44,13 @@ def deserialize_state(state_json: str) -> Dict[str, Any]:
     d = json.loads(state_json)
     if "otlp_data" in d and "otlpBuilder" not in d:
         otlp_data = d["otlp_data"]
-        # Reconstruct OTLPBuilder
         otlp = OTLPBuilder(
             run_id=d["runId"],
             public_marker=d["publicMarker"],
             trace_id=d["traceId"],
-            server_span_id=d["serverSpanId"]
+            server_span_id=d["serverSpanId"],
+            parent_span_id=d.get("parentSpanId")
         )
-        # Restore spans list
         spans = otlp_data.get("resourceSpans", [{}])[0].get("scopeSpans", [{}])[0].get("spans", [])
         otlp.spans = spans
         d["otlpBuilder"] = otlp
